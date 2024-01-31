@@ -1,0 +1,32 @@
+[project]
+name = "repro"
+description = "(re)active (pro)ber"
+version = "0.0.1"
+readme = "README.md"
+requires_python = ">=3.10"
+dependencies = [
+    "typer",
+    "dpkt",
+    "pypcap",
+    "pydantic",
+    "async-timeout",
+]
+authors = [
+  { name = "Teemu R.", email = "tpr@iki.fi" },
+]
+
+[project.scripts]
+repro = "repro.cli:app"
+
+[tool.hatch.env]
+requires = [
+    "hatch-pip-compile"
+]
+
+[tool.hatch.envs.default]
+type = "pip-compile"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
