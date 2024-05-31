@@ -1,0 +1,295 @@
+From 6f863f99747511175731204c0029808a6e8405f6 Mon Sep 17 00:00:00 2001
+From: Teemu Rytilahti <tpr@iki.fi>
+Date: Tue, 12 May 2020 14:53:37 +0200
+Subject: [PATCH 2/4] Add upnp support
+
+---
+ modules/upnp.go         |   7 ++
+ modules/upnp/scanner.go | 261 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 268 insertions(+)
+ create mode 100644 modules/upnp.go
+ create mode 100644 modules/upnp/scanner.go
+
+diff --git a/modules/upnp.go b/modules/upnp.go
+new file mode 100644
+index 0000000..da75d34
+--- /dev/null
++++ b/modules/upnp.go
+@@ -0,0 +1,7 @@
++package modules
++
++import "github.com/zmap/zgrab2/modules/upnp"
++
++func init() {
++	upnp.RegisterModule()
++}
+diff --git a/modules/upnp/scanner.go b/modules/upnp/scanner.go
+new file mode 100644
+index 0000000..39fe21b
+--- /dev/null
++++ b/modules/upnp/scanner.go
+@@ -0,0 +1,261 @@
++// Package upnp provides a zgrab2 module that probes for the UPnP endpoints.
++//
++// The default scan make an ssdp:rootdevice query using SSDP, and on success
++// fetches the device description file as pointed by the location header.
++//
++// For more details on SSDP, see XXX
++package upnp
++
++import (
++	"bufio"
++	"bytes"
++	"encoding/xml"
++	"io/ioutil"
++
++	"net/http"
++	"net/url"
++
++	"errors"
++
++	"net"
++
++	log "github.com/sirupsen/logrus"
++	"github.com/zmap/zgrab2"
++)
++
++var (
++	// Location header is missing from the SSDP reply
++	ErrMissingLocation = errors.New("location header missing")
++
++	ErrNon200Response = errors.New("response was !200")
++)
++
++// Flags holds the command-line flags for the scanner.
++type Flags struct {
++	zgrab2.BaseFlags
++	zgrab2.UDPFlags
++	Verbose bool `long:"verbose" description:"More verbose logging, include debug fields in the scan results"`
++	// TODO add FetchDeviceDescription?
++}
++
++// Module is the zgrab2 module implementation
++type Module struct {
++}
++
++// Scanner holds the state for a single scan
++type Scanner struct {
++	config *Flags
++}
++
++// RegisterModule registers the module with zgrab2
++func RegisterModule() {
++	var module Module
++	_, err := zgrab2.AddCommand("upnp", "UPNP", module.Description(), 1900, &module)
++	if err != nil {
++		log.Fatal(err)
++	}
++}
++
++// NewFlags returns a flags instant to be populated with the command line args
++func (module *Module) NewFlags() interface{} {
++	return new(Flags)
++}
++
++// NewScanner returns a new UPNP scanner instance
++func (module *Module) NewScanner() zgrab2.Scanner {
++	return new(Scanner)
++}
++
++// Description returns an overview of this module.
++func (module *Module) Description() string {
++	return "Scan for UPnP"
++}
++
++// Validate checks that the flags are valid
++func (cfg *Flags) Validate(args []string) error {
++	return nil
++}
++
++// Help returns the module's help string
++func (cfg *Flags) Help() string {
++	return ""
++}
++
++// Init initialized the scanner
++func (scanner *Scanner) Init(flags zgrab2.ScanFlags) error {
++	f, _ := flags.(*Flags)
++	scanner.config = f
++	return nil
++}
++
++// InitPerSender initializes the scanner for a given sender
++func (scanner *Scanner) InitPerSender(senderID int) error {
++	return nil
++}
++
++// Protocol returns the protocol identifer for the scanner.
++func (s *Scanner) Protocol() string {
++	return "upnp"
++}
++
++// GetName returns the module's name
++func (scanner *Scanner) GetName() string {
++	return scanner.config.Name
++}
++
++// GetTrigger returns the Trigger defined in the Flags.
++func (scanner *Scanner) GetTrigger() string {
++	return scanner.config.Trigger
++}
++
++type Results struct {
++	Response          *http.Response     `json:"response,omitempty"`
++	DeviceDescription *DeviceDescription `json:"device_description,omitempty"`
++}
++
++// GetUPnP sends a "Client" packet to the Server and reads / returns the response
++func (scanner *Scanner) GetUPnP(sock net.Conn) (*http.Response, error) {
++	payload := "M-SEARCH * HTTP/1.1\r\nST: upnp:rootdevice\r\nMX: 2\r\nMAN: \"ssdp:discover\"\r\nHOST: 239.255.255.250:1900\r\n\r\n"
++	outPacket := []byte(payload)
++	n, err := sock.Write(outPacket)
++	if err != nil {
++		return nil, err
++	}
++	if n != len(outPacket) {
++		return nil, err
++	}
++	buf := make([]byte, 1024)
++	n, err = sock.Read(buf)
++	if err != nil || n == 0 {
++		return nil, err
++	}
++
++	reader := bufio.NewReader(bytes.NewReader(buf))
++
++	resp, err := http.ReadResponse(reader, nil)
++	if err != nil {
++		return nil, err
++	}
++
++	return resp, nil
++}
++
++type Service struct {
++	ServiceType string `xml:"serviceType"`
++	ServiceID   string `xml:"serviceId"`
++	SCPDURL     string `xml:"SCPDURL"`
++	ControlURL  string `xml:"controlURL"`
++	EventSubURL string `xml:"eventSubURL"`
++}
++
++type Device struct {
++	DeviceType       string     `xml:"deviceType"`
++	FriendlyName     string     `xml:"friendlyName"`
++	Manufacturer     string     `xml:"manufacturer"`
++	ManufacturerURL  string     `xml:"manufacturerURL"`
++	ModelDescription string     `xml:"modelDescription"`
++	ModelNumber      string     `xml:"modelNumber"`
++	ModelURL         string     `xml:"modelURL"`
++	SerialNumber     string     `xml:"serialNumber"`
++	UDN              string     `xml:"UDN"`
++	Devices          *[]Device  `xml:"deviceList>device" json:",omitempty"`
++	Services         *[]Service `xml:"serviceList>service" json:",omitempty"`
++}
++
++type DeviceDescription struct {
++	Root    *xml.Name `xml:"root" json:",omitempty"`
++	Device  *Device   `xml:"device" json:",omitempty"`
++	RawData string    `json:"raw_data,omitempty" zgrab:"debug"`
++	Error   string    `json:"error,omitempty"`
++}
++
++func (scanner *Scanner) GetDeviceDescription(ssdpReply *http.Response, host string) (*DeviceDescription, error) {
++	client := &http.Client{Timeout: scanner.config.Timeout}
++
++	locationHeader := ssdpReply.Header.Get("Location")
++	if locationHeader == "" {
++		return nil, ErrMissingLocation
++	}
++	url, err := url.Parse(locationHeader)
++	if err != nil {
++		return nil, err
++	}
++
++	port := url.Port()
++
++	host = net.JoinHostPort(host, port)
++	url.Host = host
++
++	log.Debugf("Going to request %s", url.String())
++
++	req, err := http.NewRequest("GET", url.String(), nil)
++
++	if err != nil {
++		return nil, err
++	}
++
++	req.Header.Set("User-Agent", "Research-Scanner-ZGrab/0.1 (+http://<anonymized url>;anonymized-email@example.com)")
++
++	resp, err := client.Do(req)
++	if err != nil {
++		return nil, err
++	}
++
++	if resp.StatusCode != http.StatusOK {
++		return nil, ErrNon200Response
++	}
++
++	defer resp.Body.Close()
++	body, err := ioutil.ReadAll(resp.Body)
++	if err != nil {
++		return nil, err
++	}
++
++	//fmt.Printf("Got body: %s\n", body)
++
++	var data DeviceDescription
++	err = xml.Unmarshal([]byte(body), &data)
++
++	//fmt.Printf("data: %s\n", data)
++
++	data.RawData = string(body)
++
++	return &data, err
++}
++
++// Scan scans the configured server with the settings provided by the command.
++func (scanner *Scanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, error) {
++	sock, err := t.OpenUDP(&scanner.config.BaseFlags, &scanner.config.UDPFlags)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++	}
++	defer sock.Close()
++
++	host, _, err := net.SplitHostPort(sock.RemoteAddr().String())
++	if err != nil {
++		log.Fatal("this should never happen")
++	}
++
++	result := &Results{}
++
++	res, err := scanner.GetUPnP(sock)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++		log.Debugf("Got error: %s", err)
++	}
++	result.Response = res
++
++	desc, err := scanner.GetDeviceDescription(res, host)
++	result.DeviceDescription = desc
++
++	if err != nil {
++		if result.DeviceDescription == nil {
++			result.DeviceDescription = &DeviceDescription{}
++		}
++		result.DeviceDescription.Error = err.Error()
++
++		log.Warnf("Failed to get device desc: %s", err)
++	}
++
++	return zgrab2.SCAN_SUCCESS, result, nil
++}
+-- 
+2.45.1
+

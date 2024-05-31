@@ -1,0 +1,219 @@
+From 29e363d7d3d1a8cbe52ce27afacb78bfd82ab03f Mon Sep 17 00:00:00 2001
+From: Teemu Rytilahti <tpr@iki.fi>
+Date: Sat, 23 May 2020 21:06:54 +0200
+Subject: [PATCH 3/4] Add dns support
+
+---
+ modules/dns.go         |   7 ++
+ modules/dns/scanner.go | 185 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 192 insertions(+)
+ create mode 100644 modules/dns.go
+ create mode 100644 modules/dns/scanner.go
+
+diff --git a/modules/dns.go b/modules/dns.go
+new file mode 100644
+index 0000000..21258bc
+--- /dev/null
++++ b/modules/dns.go
+@@ -0,0 +1,7 @@
++package modules
++
++import "github.com/zmap/zgrab2/modules/dns"
++
++func init() {
++	dns.RegisterModule()
++}
+diff --git a/modules/dns/scanner.go b/modules/dns/scanner.go
+new file mode 100644
+index 0000000..b6b29f9
+--- /dev/null
++++ b/modules/dns/scanner.go
+@@ -0,0 +1,185 @@
++// Package dns provides a zgrab2 module that probes DNS servers.
++//
++// The default scan make an ssdp:rootdevice query using SSDP, and on success
++// fetches the device description file as pointed by the location header.
++//
++package dns
++
++import (
++	"errors"
++	"fmt"
++
++	"net"
++
++	"github.com/miekg/dns"
++	log "github.com/sirupsen/logrus"
++	"github.com/zmap/zgrab2"
++)
++
++var (
++	// Location header is missing from the SSDP reply
++	ErrMissingLocation = errors.New("location header missing")
++)
++
++// Flags holds the command-line flags for the scanner.
++type Flags struct {
++	zgrab2.BaseFlags
++	zgrab2.UDPFlags
++	Verbose bool `long:"verbose" description:"More verbose logging, include debug fields in the scan results"`
++}
++
++// Module is the zgrab2 module implementation
++type Module struct {
++}
++
++// Scanner holds the state for a single scan
++type Scanner struct {
++	config *Flags
++}
++
++// RegisterModule registers the module with zgrab2
++func RegisterModule() {
++	var module Module
++	_, err := zgrab2.AddCommand("dns", "DNS", module.Description(), 53, &module)
++	if err != nil {
++		log.Fatal(err)
++	}
++}
++
++// NewFlags returns a flags instant to be populated with the command line args
++func (module *Module) NewFlags() interface{} {
++	return new(Flags)
++}
++
++// NewScanner returns a new dns scanner instance
++func (module *Module) NewScanner() zgrab2.Scanner {
++	return new(Scanner)
++}
++
++// Description returns an overview of this module.
++func (module *Module) Description() string {
++	return "Scan for DNS"
++}
++
++// Validate checks that the flags are valid
++func (cfg *Flags) Validate(args []string) error {
++	return nil
++}
++
++// Help returns the module's help string
++func (cfg *Flags) Help() string {
++	return ""
++}
++
++// Init initialized the scanner
++func (scanner *Scanner) Init(flags zgrab2.ScanFlags) error {
++	f, _ := flags.(*Flags)
++	scanner.config = f
++	return nil
++}
++
++// InitPerSender initializes the scanner for a given sender
++func (scanner *Scanner) InitPerSender(senderID int) error {
++	return nil
++}
++
++// Protocol returns the protocol identifer for the scanner.
++func (s *Scanner) Protocol() string {
++	return "dns"
++}
++
++// GetName returns the module's name
++func (scanner *Scanner) GetName() string {
++	return scanner.config.Name
++}
++
++// GetTrigger returns the Trigger defined in the Flags.
++func (scanner *Scanner) GetTrigger() string {
++	return scanner.config.Trigger
++}
++
++
++type QueryResult struct {
++	Response *dns.Msg `json:"response,omitempty"`
++	Rtt int `json:"rtt,omitempty"`
++}
++
++func (scanner *Scanner) GetDNS(t zgrab2.ScanTarget) (*QueryResult, error) {
++	ret := &QueryResult{}
++
++	// request version.bind
++	q := []dns.Question{dns.Question{Name: "version.bind.", Qtype: dns.TypeTXT, Qclass: dns.ClassCHAOS}}
++
++	/* TODO port handling
++	port := t.Port
++	if port == 0 {
++		port = 53
++	}*/
++
++	target := fmt.Sprintf("%s:53", t.IP)
++
++	// we want no recursion
++	m := &dns.Msg{
++		MsgHdr:   dns.MsgHdr{Id: dns.Id(), RecursionDesired: false},
++		Question: q,
++	}
++	log.Debugf("Full msg: %s", m.String())
++
++	c := new(dns.Client)
++
++	// TODO dialer should respect the local port settings
++	c.Dialer = &net.Dialer{
++		Timeout: scanner.config.Timeout,
++	}
++
++	in, rtt, err := c.Exchange(m, target)
++	log.Debugf("Got packet: %s rtt: %s", in, rtt)
++	if err != nil {
++		return ret, err
++	}
++
++	ret.Response = in
++
++	return ret, err
++}
++
++// TODO this does not work even though datagrams are send and received properly
++// it will just timeout :-(
++func requestWithConn(conn net.Conn, m *dns.Msg) (*dns.Msg, error) {
++	co := &dns.Conn{Conn: conn}
++	err := co.WriteMsg(m)
++	if err != nil {
++		log.Warnf("Failed to send the message")
++		return nil, err
++	}
++
++	in, err := co.ReadMsg()
++	if err != nil {
++		log.Warnf("Unable to read response: %s", err)
++		return nil, err
++	}
++
++	fmt.Printf("in: %s", in.String())
++
++	return in, err
++}
++
++// Scan scans the configured server with the settings provided by the command.
++func (scanner *Scanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, error) {
++	// TODO: see the above function which is not working for some reason..
++	// TODO: thus we avoid using the zgrab openudp and let the dns lib to handle the connection
++	/*sock, err := t.OpenUDP(&scanner.config.BaseFlags, &scanner.config.UDPFlags)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++	}
++	defer sock.Close()*/
++
++	res, err := scanner.GetDNS(t)
++	if err != nil {
++		//log.Errorf("Got error: %s", err)
++		return zgrab2.TryGetScanStatus(err), nil, err
++
++	}
++
++	return zgrab2.SCAN_SUCCESS, res, nil
++}
+-- 
+2.45.1
+

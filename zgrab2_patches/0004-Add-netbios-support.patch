@@ -1,0 +1,323 @@
+From f739158e28a1e9710c993d327bce2ec4ffac4a0f Mon Sep 17 00:00:00 2001
+From: Teemu Rytilahti <tpr@iki.fi>
+Date: Sat, 23 May 2020 21:07:15 +0200
+Subject: [PATCH 4/4] Add netbios support
+
+---
+ modules/netbios.go         |   7 +
+ modules/netbios/scanner.go | 289 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 296 insertions(+)
+ create mode 100644 modules/netbios.go
+ create mode 100644 modules/netbios/scanner.go
+
+diff --git a/modules/netbios.go b/modules/netbios.go
+new file mode 100644
+index 0000000..f048750
+--- /dev/null
++++ b/modules/netbios.go
+@@ -0,0 +1,7 @@
++package modules
++
++import "github.com/zmap/zgrab2/modules/netbios"
++
++func init() {
++	netbios.RegisterModule()
++}
+diff --git a/modules/netbios/scanner.go b/modules/netbios/scanner.go
+new file mode 100644
+index 0000000..677b01b
+--- /dev/null
++++ b/modules/netbios/scanner.go
+@@ -0,0 +1,289 @@
++// Package netbios provides a zgrab2 module that probes for the netbios endpoints.
++package netbios
++
++import (
++	"bytes"
++	"encoding/binary"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"strings"
++
++	"errors"
++
++	"net"
++
++	log "github.com/sirupsen/logrus"
++	"github.com/zmap/zgrab2"
++)
++
++var (
++	// Location header is missing from the SSDP reply
++	ErrMissingLocation = errors.New("location header missing")
++
++	ErrNon200Response = errors.New("response was !200")
++)
++
++// Flags holds the command-line flags for the scanner.
++type Flags struct {
++	zgrab2.BaseFlags
++	zgrab2.UDPFlags
++	Verbose bool `long:"verbose" description:"More verbose logging, include debug fields in the scan results"`
++}
++
++// Module is the zgrab2 module implementation
++type Module struct {
++}
++
++// Scanner holds the state for a single scan
++type Scanner struct {
++	config *Flags
++}
++
++// RegisterModule registers the module with zgrab2
++func RegisterModule() {
++	var module Module
++	_, err := zgrab2.AddCommand("netbios", "netbios", module.Description(), 137, &module)
++	if err != nil {
++		log.Fatal(err)
++	}
++}
++
++// NewFlags returns a flags instant to be populated with the command line args
++func (module *Module) NewFlags() interface{} {
++	return new(Flags)
++}
++
++// NewScanner returns a new netbios scanner instance
++func (module *Module) NewScanner() zgrab2.Scanner {
++	return new(Scanner)
++}
++
++// Description returns an overview of this module.
++func (module *Module) Description() string {
++	return "Scan for netbios"
++}
++
++// Validate checks that the flags are valid
++func (cfg *Flags) Validate(args []string) error {
++	return nil
++}
++
++// Help returns the module's help string
++func (cfg *Flags) Help() string {
++	return ""
++}
++
++// Init initialized the scanner
++func (scanner *Scanner) Init(flags zgrab2.ScanFlags) error {
++	f, _ := flags.(*Flags)
++	scanner.config = f
++	return nil
++}
++
++// InitPerSender initializes the scanner for a given sender
++func (scanner *Scanner) InitPerSender(senderID int) error {
++	return nil
++}
++
++// Protocol returns the protocol identifer for the scanner.
++func (s *Scanner) Protocol() string {
++	return "netbios"
++}
++
++// GetName returns the module's name
++func (scanner *Scanner) GetName() string {
++	return scanner.config.Name
++}
++
++// GetTrigger returns the Trigger defined in the Flags.
++func (scanner *Scanner) GetTrigger() string {
++	return scanner.config.Trigger
++}
++
++type Results struct {
++	Header        *Header     `json:"header"`
++	NameCount     int         `json:"names_count"`
++	Names         []NameEntry `json:"names"`
++	PayloadLength int         `json:"payload_length"`
++	Statistics    []byte      `json:"stats"`
++}
++
++type Header struct {
++	TID     uint16 `json:"tid,omitempty"`
++	Flags   uint16 `json:"flags,omitempty"`
++	QDCOUNT uint16
++	ANCOUNT uint16
++	NSCOUNT uint16
++	ARCOUNT uint16
++}
++
++type NetbiosName [15]byte
++type NetbiosType byte
++
++// https://dzone.com/articles/practical-fun-with-netbios-name-service-and-comput
++// NetBIOS name is a string of 15 characters, with the last (16th) character reserved for a type suffix
++// (0x00 for Workstations, 0x20 for File Servers, 0x1D for Master Browser, etc.)
++type NameEntry struct {
++	Name  NetbiosName `json:"name"`
++	Type  NetbiosType `json:"type"`
++	Flags uint16      `json:"flags"`
++}
++
++// MarshalJSON gives the #define name, or "UNKNOWN (0x##)"
++func (format NetbiosName) MarshalJSON() ([]byte, error) {
++	return json.Marshal(strings.Trim(string(format[:]), " "))
++}
++
++func (format NetbiosType) MarshalJSON() ([]byte, error) {
++	// from wiresharks packet-netbios.c
++	typemap := map[byte]string{
++		0x00: "Workstation/Redirector",
++		0x01: "Browser",
++		0x02: "Workstation/Redirector",
++		//                /* not sure what 0x02 is, I'm seeing a lot of them however */
++		//                /* I'm seeing them with workstation/redirection host
++		//                        announcements */
++		0x03: "Messenger service/Main name",
++		0x05: "Forwarded name",
++		0x06: "RAS Server service",
++		0x1b: "Domain Master Browser",
++		0x1c: "Domain Controllers",
++		0x1d: "Local Master Browser",
++		0x1e: "Browser Election Service",
++		0x1f: "Net DDE Service",
++		0x20: "Server service",
++		0x21: "RAS client service",
++		0x22: "Exchange Interchange (MSMail Connector)",
++		0x23: "Exchange Store",
++		0x24: "Exchange Directory",
++		0x2b: "Lotus Notes Server service",
++		0x30: "Modem sharing server service",
++		0x31: "Modem sharing client service",
++		0x43: "SMS Clients Remote Control",
++		0x44: "SMS Administrators Remote Control Tool",
++		0x45: "SMS Clients Remote Chat",
++		0x46: "SMS Clients Remote Transfer",
++		0x4c: "DEC Pathworks TCP/IP Service on Windows NT",
++		0x52: "DEC Pathworks TCP/IP Service on Windows NT",
++		0x6a: "Microsoft Exchange IMC",
++		0x87: "Microsoft Exchange MTA",
++		0xbe: "Network Monitor Agent",
++		0xbf: "Network Monitor Analyzer",
++	}
++	if value, ok := typemap[byte(format)]; ok {
++		return json.Marshal(value)
++	}
++
++	return json.Marshal(fmt.Sprintf("Unknown type (0x%02x)", format))
++}
++
++// Getnetbios sends a "Client" packet to the Server and reads / returns the response
++func (scanner *Scanner) GetNetBios(sock net.Conn) (*Results, error) {
++	payloadString := "32f50000000100000000000020434b4141414141414141414141414141414141414141414141414141414141410000210001"
++	outPacket, err := hex.DecodeString(payloadString)
++	if err != nil {
++		return nil, err
++	}
++
++	n, err := sock.Write(outPacket)
++	if err != nil {
++		return nil, err
++	}
++	if n != len(outPacket) {
++		return nil, err
++	}
++	buf := make([]byte, 1024)
++	n, err = sock.Read(buf)
++	if err != nil || n == 0 {
++		return nil, err
++	}
++
++	results := Results{}
++
++	header := Header{}
++	if len(buf) < 12 {
++		return nil, errors.New("Not enough bytes")
++	}
++
++	buffer := bytes.NewBuffer(buf[:12])
++	err = binary.Read(buffer, binary.BigEndian, &header)
++	if err != nil {
++		return nil, errors.New("Header parsing failed")
++	}
++	results.Header = &header
++
++	buf = buf[12:]
++
++	if header.ANCOUNT < 1 {
++		return nil, errors.New("Answer count below one")
++	}
++
++	// skip useless things
++	// from /home/tpr/code/nmap/nselib/netbios.lua
++	// -- * (ntstring) requested name
++	//-- * (2 bytes)  query type
++	//-- * (2 bytes)  query class
++	//-- * (2 bytes)  time to live
++
++
++	if len(buf) < 43 { // most of this is from the requested name
++		return &results, errors.New("Not enough data after the header")
++	}
++
++	//-- * (2 bytes)  record length
++	//-- * (1 byte)   number of names
++	buf = buf[43:]
++	payloadLen := int(buf[0])
++	results.PayloadLength = payloadLen
++	log.Debugf("Payload len: %d", payloadLen)
++	buf = buf[1:]
++
++	nameCount := int(buf[0])
++	results.NameCount = nameCount
++	log.Debugf("Got %d names", nameCount)
++	buf = buf[1:]
++
++	//-- * [for each name]
++	//-- *  (16 bytes) padded name, with a 1-byte suffix
++	//-- *  (2 bytes)  flags
++	//-- * (variable) statistics (usually mac address)
++
++	if len(buf) < nameCount*18 {
++		return &results, errors.New("Not enough names available")
++	}
++
++	for i := 0; i < nameCount; i++ {
++		name := NameEntry{}
++		buffer := bytes.NewBuffer(buf[:18])
++		err = binary.Read(buffer, binary.BigEndian, &name)
++		if err != nil {
++			return &results, errors.New("Name name parsing failed")
++		}
++		log.Debugf("Got name: %s", name)
++		results.Names = append(results.Names, name)
++		buf = buf[18:]
++	}
++	stats := payloadLen - (nameCount * 18)
++	log.Debugf("Remaining stats: %d", stats)
++	results.Statistics = buf[:stats]
++
++	return &results, nil
++}
++
++// Scan scans the configured server with the settings provided by the command.
++func (scanner *Scanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, error) {
++	sock, err := t.OpenUDP(&scanner.config.BaseFlags, &scanner.config.UDPFlags)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++	}
++	defer sock.Close()
++
++	result, err := scanner.GetNetBios(sock)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++		log.Debugf("Got error: %s", err)
++	}
++
++	return zgrab2.SCAN_SUCCESS, result, nil
++}
+-- 
+2.45.1
+

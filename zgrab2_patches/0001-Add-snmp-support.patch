@@ -1,0 +1,615 @@
+From c4997a2b9136e685341b45c3c5815400bfd5f076 Mon Sep 17 00:00:00 2001
+From: Teemu Rytilahti <tpr@iki.fi>
+Date: Tue, 12 May 2020 14:52:02 +0200
+Subject: [PATCH 1/4] Add snmp support
+
+---
+ go.mod                  |   9 +-
+ go.sum                  |  21 ++
+ modules/snmp.go         |   7 +
+ modules/snmp/scanner.go | 479 ++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 513 insertions(+), 3 deletions(-)
+ create mode 100644 modules/snmp.go
+ create mode 100644 modules/snmp/scanner.go
+
+diff --git a/go.mod b/go.mod
+index 260f5d7..20ddd31 100644
+--- a/go.mod
++++ b/go.mod
+@@ -3,13 +3,16 @@ module github.com/zmap/zgrab2
+ go 1.12
+ 
+ require (
++	github.com/golang/mock v1.2.0 // indirect
++	github.com/miekg/dns v1.1.29
+ 	github.com/prometheus/client_golang v1.1.0
+ 	github.com/sirupsen/logrus v1.4.2
++	github.com/soniah/gosnmp v1.26.1-0.20200512090557-16be3a6124d6
+ 	github.com/zmap/zcrypto v0.0.0-20190729165852-9051775e6a2e
+ 	github.com/zmap/zflags v1.4.0-beta.1
+-	golang.org/x/crypto v0.0.0-20190911031432-227b76d455e7
+-	golang.org/x/net v0.0.0-20190912160710-24e19bdeb0f2
+-	golang.org/x/sys v0.0.0-20190913121621-c3b328c6e5a7
++	golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550
++	golang.org/x/net v0.0.0-20190923162816-aa69164e4478
++	golang.org/x/sys v0.0.0-20190924154521-2837fb4f24fe
+ 	golang.org/x/text v0.3.2
+ 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15
+ 	gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22
+diff --git a/go.sum b/go.sum
+index f38da41..72e0498 100644
+--- a/go.sum
++++ b/go.sum
+@@ -12,6 +12,7 @@ github.com/go-logfmt/logfmt v0.3.0/go.mod h1:Qt1PoO58o5twSAckw1HlFXLmHsOX5/0LbT9
+ github.com/go-logfmt/logfmt v0.4.0/go.mod h1:3RMwSq7FuexP4Kalkev3ejPJsZTpXXBr9+V4qmtdjCk=
+ github.com/go-stack/stack v1.8.0/go.mod h1:v0f6uXyyMGvRgIKkXu+yp6POWl0qKG85gN/melR3HDY=
+ github.com/gogo/protobuf v1.1.1/go.mod h1:r8qH/GZQm5c6nD/R0oafs1akxWv10x8SbQlK7atdtwQ=
++github.com/golang/mock v1.2.0/go.mod h1:oTYuIxOrZwtPieC+H1uAHpcLFnEyAGVDL/k47Jfbm0A=
+ github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
+ github.com/golang/protobuf v1.3.1/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
+ github.com/golang/protobuf v1.3.2 h1:6nsPYzhq5kReh6QImI3k5qWzO4PEbvbIW2cwSfR/6xs=
+@@ -31,6 +32,8 @@ github.com/kr/text v0.1.0 h1:45sCR5RtlFHMR4UwH9sdQ5TC8v0qDQCHnXt+kaKSTVE=
+ github.com/kr/text v0.1.0/go.mod h1:4Jbv+DJW3UT/LiOwJeYQe1efqtUx/iVham/4vfdArNI=
+ github.com/matttproud/golang_protobuf_extensions v1.0.1 h1:4hp9jkHxhMHkqkrB3Ix0jegS5sx/RkqARlsWZ6pIwiU=
+ github.com/matttproud/golang_protobuf_extensions v1.0.1/go.mod h1:D8He9yQNgCq6Z5Ld7szi9bcBfOoFv/3dc6xSMkL2PC0=
++github.com/miekg/dns v1.1.29 h1:xHBEhR+t5RzcFJjBLJlax2daXOrTYtr9z4WdKEfWFzg=
++github.com/miekg/dns v1.1.29/go.mod h1:KNUDUusw/aVsxyTYZM1oqvCicbwhgbNgztCETuNZ7xM=
+ github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
+ github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
+ github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742/go.mod h1:bx2lNnkwVCuqBIxFjflWJWanXIb3RllmbCylyMrvgv0=
+@@ -59,11 +62,18 @@ github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPx
+ github.com/sirupsen/logrus v1.3.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
+ github.com/sirupsen/logrus v1.4.2 h1:SPIRibHv4MatM3XXNO2BJeFLZwZ2LvZgfQ5+UNI2im4=
+ github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
++github.com/soniah/gosnmp v1.25.0 h1:0y8vpjD07NPmnT+wojnUrKkYLX9Fxw1jI4cGTumWugQ=
++github.com/soniah/gosnmp v1.25.0/go.mod h1:8YvfZxH388NIIw2A+X5z2Oh97VcNhtmxDLt5QeUzVuQ=
++github.com/soniah/gosnmp v1.26.0 h1:WkqN0GVuiaYE/ZG2BC62W8TdDvgve1FrYlafxYffCP8=
++github.com/soniah/gosnmp v1.26.0/go.mod h1:hF/8DZgfcJ/2KObJTGoG1KKjitz0a/kC9rE0RFhdPkY=
++github.com/soniah/gosnmp v1.26.1-0.20200512090557-16be3a6124d6 h1:EJUU9343ovy+NyhSTiGDMt6Hl48hDpxIMZ5cwCa8N20=
++github.com/soniah/gosnmp v1.26.1-0.20200512090557-16be3a6124d6/go.mod h1:hF/8DZgfcJ/2KObJTGoG1KKjitz0a/kC9rE0RFhdPkY=
+ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+ github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+ github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXfy6kDkUVs=
+ github.com/stretchr/testify v1.3.0 h1:TivCn/peBQ7UY8ooIcPgZFpTNSz0Q2U6UrFlUfqbe0Q=
+ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
++github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5cxcmMvtA=
+ github.com/weppos/publicsuffix-go v0.4.0 h1:YSnfg3V65LcCFKtIGKGoBhkyKolEd0hlipcXaOjdnQw=
+ github.com/weppos/publicsuffix-go v0.4.0/go.mod h1:z3LCPQ38eedDQSwmsSRW4Y7t2L8Ln16JPQ02lHAdn5k=
+ github.com/zmap/rc2 v0.0.0-20131011165748-24b9757f5521 h1:kKCF7VX/wTmdg2ZjEaqlq99Bjsoiz7vH6sFniF/vI4M=
+@@ -78,13 +88,20 @@ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACk
+ golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
+ golang.org/x/crypto v0.0.0-20190911031432-227b76d455e7 h1:0hQKqeLdqlt5iIwVOBErRisrHJAN57yOiPRQItI20fU=
+ golang.org/x/crypto v0.0.0-20190911031432-227b76d455e7/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
++golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550 h1:ObdrDkeb4kJdCP557AjRjq69pTHfNouLtWZG7j9rPN8=
++golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
++golang.org/x/mod v0.1.1-0.20191105210325-c90efee705ee/go.mod h1:QqPTAvyqsEbceGzBzNggFXnrqF1CaUcvgkdR5Ot7KZg=
+ golang.org/x/net v0.0.0-20181114220301-adae6a3d119a/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
+ golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+ golang.org/x/net v0.0.0-20190613194153-d28f0bde5980/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
++golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+ golang.org/x/net v0.0.0-20190912160710-24e19bdeb0f2 h1:4dVFTC832rPn4pomLSz1vA+are2+dU19w1H8OngV7nc=
+ golang.org/x/net v0.0.0-20190912160710-24e19bdeb0f2/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
++golang.org/x/net v0.0.0-20190923162816-aa69164e4478 h1:l5EDrHhldLYb3ZRHDUhXF7Om7MvYXnkV9/iQNo1lX6g=
++golang.org/x/net v0.0.0-20190923162816-aa69164e4478/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+ golang.org/x/sync v0.0.0-20181108010431-42b317875d0f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20181221193216-37e7f081c4d4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
++golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sys v0.0.0-20180905080454-ebe1bf3edb33/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20181116152217-5ac8a444bdc5/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+@@ -93,10 +110,14 @@ golang.org/x/sys v0.0.0-20190422165155-953cdadca894/go.mod h1:h1NjWce9XRLGQEsW7w
+ golang.org/x/sys v0.0.0-20190801041406-cbf593c0f2f3/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20190913121621-c3b328c6e5a7 h1:wYqz/tQaWUgGKyx+B/rssSE6wkIKdY5Ee6ryOmzarIg=
+ golang.org/x/sys v0.0.0-20190913121621-c3b328c6e5a7/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
++golang.org/x/sys v0.0.0-20190924154521-2837fb4f24fe h1:6fAMxZRR6sl1Uq8U61gxU+kPTs2tR8uOySCbBP7BN/M=
++golang.org/x/sys v0.0.0-20190924154521-2837fb4f24fe/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.2 h1:tW2bmiBqwgJj/UpqtC8EpXEZVYOwU0yG4iWbprSVAcs=
+ golang.org/x/text v0.3.2/go.mod h1:bEr9sfX3Q8Zfm5fL9x+3itogRgK3+ptLWKqgva+5dAk=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
++golang.org/x/tools v0.0.0-20191216052735-49a3e744a425/go.mod h1:TB2adYChydJhpapKDTa4BR/hXlZSLoq2Wpct/0txZ28=
++golang.org/x/xerrors v0.0.0-20191011141410-1b5146add898/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ gopkg.in/alecthomas/kingpin.v2 v2.2.6/go.mod h1:FMv+mEhP44yOT+4EoQTLFTRgOQ1FBLkstjWtayDeSgw=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+diff --git a/modules/snmp.go b/modules/snmp.go
+new file mode 100644
+index 0000000..32c1254
+--- /dev/null
++++ b/modules/snmp.go
+@@ -0,0 +1,7 @@
++package modules
++
++import "github.com/zmap/zgrab2/modules/snmp"
++
++func init() {
++	snmp.RegisterModule()
++}
+diff --git a/modules/snmp/scanner.go b/modules/snmp/scanner.go
+new file mode 100644
+index 0000000..fe5fada
+--- /dev/null
++++ b/modules/snmp/scanner.go
+@@ -0,0 +1,479 @@
++// Package snmp provides a zgrab2 module that probes for the snmp services.
++// NOTE: unlike most modules, this scans on UDP.
++//
++// The module uses "public" community for SNMPv2 and "public" username for SNMPv3,
++// and tries to make GetBulk request to the given OID.
++// When using version 3, the engine id information is parsed.
++//
++// This package uses gosnmp library to do the heavy lifting.
++// TODO upstream engineid parsing to gosnmp?
++package snmp
++
++import (
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/hex"
++	"encoding/json"
++	//"bytes"
++	"errors"
++	"fmt"
++	//"time"
++
++	//"io"
++	"net"
++
++	//"strconv"
++	//"time"
++
++	log "github.com/sirupsen/logrus"
++	"github.com/soniah/gosnmp"
++	"github.com/zmap/zgrab2"
++)
++
++var (
++	// ErrInvalidLeapIndicator is returned if an invalid LeapIndicator is found
++	ErrInvalidLeapIndicator = errors.New("leap indicator not valid")
++
++	// ErrInvalidVersion is returned if an invalid version number is found
++	ErrInvalidVersion = errors.New("version number not valid")
++
++	ErrInvalidEngineId   = errors.New("invalid engine id length")
++	ErrInvalidRfcPayload = errors.New("invalid rfc payload")
++)
++
++// Flags holds the command-line flags for the scanner.
++type Flags struct {
++	zgrab2.BaseFlags
++	zgrab2.UDPFlags
++	Version   uint8  `long:"version" description:"The version number to pass to the Server." default:"2"`
++	Oid       string `long:"oid" description:"Parent oid to check"`
++	Community string `long:"community" description:"Community string to use, default 'public'"`
++	Verbose bool `long:"verbose" description:"Enable verbose logging"`
++}
++
++// Module is the zgrab2 module implementation
++type Module struct {
++}
++
++// Scanner holds the state for a single scan
++type Scanner struct {
++	config *Flags
++}
++
++// RegisterModule registers the module with zgrab2
++func RegisterModule() {
++	var module Module
++	_, err := zgrab2.AddCommand("snmp", "SNMP", module.Description(), 161, &module)
++	if err != nil {
++		log.Fatal(err)
++	}
++}
++
++// NewFlags returns a flags instant to be populated with the command line args
++func (module *Module) NewFlags() interface{} {
++	return new(Flags)
++}
++
++// NewScanner returns a new SNMP scanner instance
++func (module *Module) NewScanner() zgrab2.Scanner {
++	return new(Scanner)
++}
++
++// Description returns an overview of this module.
++func (module *Module) Description() string {
++	return "Scan for SNMP"
++}
++
++// Validate checks that the flags are valid
++func (cfg *Flags) Validate(args []string) error {
++	return nil
++}
++
++// Help returns the module's help string
++func (cfg *Flags) Help() string {
++	return ""
++}
++
++// Init initialized the scanner
++func (scanner *Scanner) Init(flags zgrab2.ScanFlags) error {
++	f, _ := flags.(*Flags)
++	scanner.config = f
++	//log.SetLevel(log.DebugLevel)
++	if f.Verbose {
++		log.Warn("enabling debug logger")
++	}
++
++	return nil
++}
++
++// InitPerSender initializes the scanner for a given sender
++func (scanner *Scanner) InitPerSender(senderID int) error {
++	return nil
++}
++
++// Protocol returns the protocol identifer for the scanner.
++func (s *Scanner) Protocol() string {
++	return "snmp"
++}
++
++// GetName returns the module's name
++func (scanner *Scanner) GetName() string {
++	return scanner.config.Name
++}
++
++// GetTrigger returns the Trigger defined in the Flags.
++func (scanner *Scanner) GetTrigger() string {
++	return scanner.config.Trigger
++}
++
++/*
++1st bit
++#define F_SNMP_ENGINEID_CONFORM 0x80
++#define SNMP_ENGINEID_RFC1910 0x00
++#define SNMP_ENGINEID_RFC3411 0x01
++*/
++
++/*
++   Format    Description                     References
++   -------   -----------                     ----------
++        0    reserved, unused                 [RFC3411]
++        1    IPv4 address                     [RFC3411]
++        2    IPv6 address                     [RFC3411]
++        3    MAC address                      [RFC3411]
++        4    administratively assigned text   [RFC3411]
++        5    administratively assigned octets [RFC3411]
++     6-127   reserved, unused                 [RFC3411]
++   128-255   enterprise specific              [RFC3411]
++*/
++
++type RfcPayloadFormat byte
++
++const (
++	FormatIPv4   RfcPayloadFormat = 0x01
++	FormatIPv6   RfcPayloadFormat = 0x02
++	FormatMAC    RfcPayloadFormat = 0x03
++	FormatText   RfcPayloadFormat = 0x04
++	FormatOctets RfcPayloadFormat = 0x05
++	FormatEnterprise1 RfcPayloadFormat = 0x80
++)
++
++// MarshalJSON gives the #define name, or "UNKNOWN (0x##)"
++func (format RfcPayloadFormat) MarshalJSON() ([]byte, error) {
++	ret := ""
++	switch format {
++	case FormatIPv4:
++		ret = "IPv4"
++	case FormatIPv6:
++		ret = "IPv6"
++	case FormatMAC:
++		ret = "mac"
++	case FormatText:
++		ret = "text"
++	case FormatOctets:
++		ret = "octets"
++	case FormatEnterprise1:
++		ret = "enterprise"
++	default:
++		ret = fmt.Sprintf("Unknown format (0x%02x)", format)
++	}
++
++	return json.Marshal(ret)
++}
++
++type PayloadFormat byte
++
++const (
++	FormatEnterprise PayloadFormat = 0
++	FormatRFC        PayloadFormat = 1
++)
++
++func (format PayloadFormat) MarshalJSON() ([]byte, error) {
++	ret := ""
++	switch format {
++	case FormatEnterprise:
++		ret = "enterprise"
++	case FormatRFC:
++		ret = "rfc"
++	default:
++		ret = fmt.Sprintf("Unknown format (0x%02x)", format)
++	}
++
++	return json.Marshal(ret)
++}
++
++type EngineIdData struct {
++	EnterpriseId     uint32           `json:"enterprise_id"`
++	PayloadFormat    PayloadFormat    `json:"payload_format"`
++	RfcPayloadFormat RfcPayloadFormat `json:"rfc_payload_format"`
++	RfcPayload       string           `json:"rfc_payload"`
++	EnterprisePayload string `json:"enterprise_payload,omitempty"`
++	RawPayload string `json:"raw_payload,omitempty"`
++}
++
++type SecurityParameters struct {
++	EngineBoots uint32 `json:"engine_boots"`
++	EngineUptime uint32 `json:"engine_uptime"`
++}
++
++func parseRfcPayload(payload []byte, ret *EngineIdData) error {
++	format := RfcPayloadFormat(payload[0])
++	payload = payload[1:]
++	ret.RfcPayloadFormat = format
++	payloadLen := len(payload)
++	var value string
++	switch format {
++	case FormatIPv4:
++		if payloadLen < 4 {
++			return ErrInvalidRfcPayload
++		}
++
++		value = net.IP(payload[:4]).String()
++		payload = payload[4:]
++		// fmt.Printf("IPV4: %s\n", value.String())
++	case FormatIPv6:
++		if payloadLen < 16 {
++			return ErrInvalidRfcPayload
++		}
++		value = net.IP(payload[:16]).String()
++		payload = payload[16:]
++		// fmt.Printf("IPv6: %s\n", value.String())
++	case FormatMAC:
++		if payloadLen < 6 {
++			return ErrInvalidRfcPayload
++		}
++		addr := net.HardwareAddr(payload[:6])
++		// fmt.Printf("MAC: %s\n", addr.String())
++		value = addr.String()
++		payload = payload[6:]
++	case FormatText:
++		value = string(payload)
++		payload = payload[len(value):]
++		//fmt.Printf("Text: %s\n", value)
++	case FormatOctets:
++		value = base64.StdEncoding.EncodeToString(payload)
++		log.Debugf("Got octet payload length of %d", payloadLen)
++		payload = payload[payloadLen:]
++		//fmt.Printf("Octets: %s\n", value)
++	case FormatEnterprise1:
++		// /* demystify: 4B random, 4B epoch seconds */ according to wireshark
++		switch ret.EnterpriseId {
++		case 8072:
++			value = "Net-SNMP random"
++		case 2021:
++			value = "UCD-SNMP random"
++		default:
++			value = "Unknown enterprise-specific"
++		}
++		payload = payload[payloadLen:]
++
++	default:
++		log.Warnf("Unknown format: %d", format)
++		return nil
++	}
++
++	if len(payload) > 0 {
++		log.Warnf("Got extra bytes after parsing the rfc payload of %s: %#v", format, payload)
++	}
++
++	ret.RfcPayload = value
++
++	return nil
++}
++
++func extractSecurityParameters(resp *gosnmp.SnmpPacket) (SecurityParameters, error) {
++	params := SecurityParameters{}
++	secParams := resp.SecurityParameters.(*gosnmp.UsmSecurityParameters)
++
++	params.EngineBoots = secParams.AuthoritativeEngineBoots
++	params.EngineUptime = secParams.AuthoritativeEngineTime
++
++	return params, nil
++}
++
++func parseEngineId(engineId string) (EngineIdData, error) {
++	data := EngineIdData{}
++
++	b := []byte(engineId)
++
++	data.RawPayload = hex.EncodeToString(b)
++	//r := bytes.NewReader(b)
++	// fmt.Printf("%#v\n", b)
++
++	// The SnmpEngineID textual convention [RFC3411] defines that an
++	//   snmpEngineID value MUST be between 5 and 32 octets long.
++
++	engineIdLength := len(engineId)
++
++	if engineIdLength > 32 || engineIdLength < 5 {
++		return data, ErrInvalidEngineId
++	}
++
++	format := FormatEnterprise
++	if b[0]&0x80 != 0 {
++		format = FormatRFC
++	}
++	// fmt.Printf("Using format %d\n", format)
++
++	data.PayloadFormat = PayloadFormat(format)
++
++	vendor := binary.BigEndian.Uint32(b[0:4])
++	vendor ^= 0x80000000
++
++	data.EnterpriseId = vendor
++
++	var err error = nil
++
++	// fmt.Printf("vendor: %d (%#v)\n", vendor, vendor)
++	switch format {
++	case FormatRFC:
++		err = parseRfcPayload(b[4:], &data)
++		if err != nil {
++			log.Warnf("Unable to parse RFC data! %s", err)
++		}
++	case FormatEnterprise:
++		data.EnterprisePayload =  base64.StdEncoding.EncodeToString(b[4:])
++	}
++
++	return data, err
++}
++
++type OidValues map[string]interface{}
++
++type ScanResult struct {
++	EngineData  *EngineIdData      `json:"engine_id,omitempty"`
++	SecurityParameters *SecurityParameters `json:"security_parameters,omitempty"`
++	ContextName string             `json:"context_name,omitempty"`
++	Version     gosnmp.SnmpVersion `json:"snmp_version"`
++	Oids        OidValues          `json:"oids"`
++	Community   string             `json:"community"`
++}
++
++func (scanner *Scanner) ScanSNMP(target string) (ScanResult, error) {
++	res := ScanResult{}
++	community := scanner.config.Community
++	if community == "" {
++		community = "public"
++	}
++	res.Community = community
++
++	var version gosnmp.SnmpVersion
++	switch scanner.config.Version {
++	case 2:
++		version = gosnmp.Version2c
++	case 3:
++		version = gosnmp.Version3
++	default:
++		return res, ErrInvalidVersion
++	}
++
++	port := uint16(scanner.config.Port)
++	if port == 0 {
++		port = 161
++	}
++
++	conn := gosnmp.GoSNMP{
++		Target: target,
++		Community: community,
++		Retries: 0,
++		Timeout: scanner.config.Timeout,
++		Version: version,
++		Port: port,
++		MaxRepetitions: 15,
++	}
++	if scanner.config.Verbose {
++		conn.Logger = log.New()
++	}
++
++
++	if version == gosnmp.Version3 {
++		conn.SecurityModel = gosnmp.UserSecurityModel
++		var sec = gosnmp.UsmSecurityParameters{UserName: "public",
++			AuthoritativeEngineID:    "",
++			AuthenticationProtocol:   gosnmp.NoAuth,
++			AuthenticationPassphrase: "",
++			PrivacyProtocol:          gosnmp.NoPriv,
++			PrivacyPassphrase:        "",
++		}
++		conn.SecurityParameters = &sec
++	}
++
++	err := conn.Connect()
++	if err != nil {
++		return res, err
++	}
++
++	defer conn.Conn.Close()
++
++	log.Debugf("TODO: use given oids from config")
++	var oids = []string{
++		"1.3.6.1.2.1.1",
++	}
++	var resp *gosnmp.SnmpPacket
++	resp, err = conn.GetBulk(oids, 0, 15)
++	//resp, err = gosnmp.Default.GetBulk(oids, 0, 15)
++	if err != nil {
++		return res, err
++	}
++
++
++	//time.Sleep(12000 * time.Second)
++
++	res.Version = resp.Version
++
++	//fmt.Printf("Got %v variables\n", len(resp.Variables))
++	if resp.Version == gosnmp.Version3 {
++		res.ContextName = resp.ContextName
++
++		engineId, err := parseEngineId(resp.ContextEngineID)
++		if err != nil {
++			log.Errorf("Unable to parse engine id: #{err}")
++		}
++		// fmt.Printf("%#v", engineId)
++		res.EngineData = &engineId
++
++		secParams, err := extractSecurityParameters(resp)
++		if err != nil {
++			log.Errorf("Unable to extract security parameters: #{err}")
++		}
++
++		res.SecurityParameters = &secParams
++
++	}
++
++	res.Oids = OidValues{}
++
++	for _, v := range resp.Variables {
++		// fmt.Printf("Got %s with type %s, value=%s\n", v.Name, v.Type, v.Value)
++		value := v.Value
++
++		// Convert strings to strings..
++		if v.Type == gosnmp.OctetString {
++			value = string(value.([]byte))
++		}
++		res.Oids[v.Name] = value
++	}
++
++	if err != nil {
++		return res, err
++	}
++
++	return res, nil
++}
++
++// Scan scans the configured server with the settings provided by the command.
++func (scanner *Scanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, error) {
++	/*sock, err := t.OpenUDP(&scanner.config.BaseFlags, &scanner.config.UDPFlags)
++	if err != nil {
++		return zgrab2.TryGetScanStatus(err), nil, err
++	}
++	defer sock.Close()*/
++	//log.Printf("Using timeout %s", gosnmp.Default.Timeout)
++	result := &ScanResult{}
++	var err error = nil
++	*result, err = scanner.ScanSNMP(t.IP.String())
++	if err != nil {
++		return zgrab2.SCAN_PROTOCOL_ERROR, result, err
++	}
++
++	return zgrab2.SCAN_SUCCESS, result, nil
++}
+-- 
+2.45.1
+
